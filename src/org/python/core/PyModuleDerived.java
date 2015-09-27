@@ -5,9 +5,7 @@ import java.io.Serializable;
 import org.python.core.finalization.FinalizeTrigger;
 import org.python.core.finalization.FinalizablePyObjectDerived;
 
-public class PyModuleDerived extends PyModule implements Slotted,FinalizablePyObjectDerived {
-
-    public FinalizeTrigger finalizeTrigger;
+public class PyModuleDerived extends PyModule implements Slotted,FinalizablePyObjectDerived,TraverseprocDerived {
 
     public PyObject getSlot(int index) {
         return slots[index];
@@ -28,15 +26,36 @@ public class PyModuleDerived extends PyModule implements Slotted,FinalizablePyOb
     }
 
     public void __ensure_finalizer__() {
-        finalizeTrigger=FinalizeTrigger.makeTrigger(this);
+        FinalizeTrigger.ensureFinalizer(this);
     }
+
+    /* TraverseprocDerived implementation */
+    public int traverseDerived(Visitproc visit,Object arg) {
+        int retVal;
+        for(int i=0;i<slots.length;++i) {
+            if (slots[i]!=null) {
+                retVal=visit.visit(slots[i],arg);
+                if (retVal!=0) {
+                    return retVal;
+                }
+            }
+        }
+        retVal=visit.visit(objtype,arg);
+        return retVal!=0?retVal:traverseDictIfAny(visit,arg);
+    }
+
+    /* end of TraverseprocDerived implementation */
 
     public PyModuleDerived(PyType subtype) {
         super(subtype);
         slots=new PyObject[subtype.getNumSlots()];
         if (subtype.needsFinalizer()) {
-            finalizeTrigger=FinalizeTrigger.makeTrigger(this);
+            FinalizeTrigger.ensureFinalizer(this);
         }
+    }
+
+    public int traverseDictIfAny(Visitproc visit,Object arg) {
+        return 0;
     }
 
     public PyString __str__() {
@@ -829,9 +848,7 @@ public class PyModuleDerived extends PyModule implements Slotted,FinalizablePyOb
         PyObject impl=self_type.lookup("__len__");
         if (impl!=null) {
             PyObject res=impl.__get__(this,self_type).__call__();
-            if (res instanceof PyInteger)
-                return((PyInteger)res).getValue();
-            throw Py.TypeError("__len__ should return a int");
+            return res.asInt();
         }
         return super.__len__();
     }
@@ -1093,8 +1110,11 @@ public class PyModuleDerived extends PyModule implements Slotted,FinalizablePyOb
         // Otherwise, we call the derived __tojava__, if it exists:
         PyType self_type=getType();
         PyObject impl=self_type.lookup("__tojava__");
-        if (impl!=null)
-            return impl.__get__(this,self_type).__call__(Py.java2py(c)).__tojava__(Object.class);
+        if (impl!=null) {
+            PyObject delegate=impl.__get__(this,self_type).__call__(Py.java2py(c));
+            if (delegate!=this)
+                return delegate.__tojava__(Object.class);
+        }
         return super.__tojava__(c);
     }
 

@@ -13,7 +13,7 @@ import org.python.expose.ExposedType;
  *
  */
 @ExposedType(name = "module")
-public class PyModule extends PyObject {
+public class PyModule extends PyObject implements Traverseproc {
     private final PyObject moduleDoc = new PyString(
         "module(name[, doc])\n" +
         "\n" +
@@ -62,27 +62,33 @@ public class PyModule extends PyObject {
         __dict__.__setitem__("__doc__", doc);
         if (name.equals(new PyString("__main__"))) {
             __dict__.__setitem__("__builtins__", Py.getSystemState().modules.__finditem__("__builtin__"));
+            __dict__.__setitem__("__package__", Py.None);
         }
     }
 
+    @Override
     public PyObject fastGetDict() {
         return __dict__;
     }
 
+    @Override
     public PyObject getDict() {
         return __dict__;
     }
 
+    @Override
     @ExposedSet(name = "__dict__")
     public void setDict(PyObject newDict) {
         throw Py.TypeError("readonly attribute");
     }
 
+    @Override
     @ExposedDelete(name = "__dict__")
     public void delDict() {
         throw Py.TypeError("readonly attribute");
     }
 
+    @Override
     protected PyObject impAttr(String name) {
         if (__dict__ == null) {
             return null;
@@ -95,15 +101,16 @@ public class PyModule extends PyObject {
         if (pyName == null) {
             return null;
         }
-        PyObject attr = null;
+
         String fullName = (pyName.__str__().toString() + '.' + name).intern();
-        if (path == Py.None) {
-            // XXX: disabled
-            //attr = imp.loadFromClassLoader(fullName,
-            //                               Py.getSystemState().getClassLoader());
-        } else if (path instanceof PyList) {
-            attr = imp.find_module(name, fullName, (PyList)path);
-        } else {
+        PyObject modules = Py.getSystemState().modules;
+        PyObject attr = modules.__finditem__(fullName);
+
+        if (path instanceof PyList) {
+            if (attr == null) {
+                attr = imp.find_module(name, fullName, (PyList)path);
+            }
+        } else if (path != Py.None) {
             throw Py.TypeError("__path__ must be list or None");
         }
 
@@ -113,7 +120,7 @@ public class PyModule extends PyObject {
 
         if (attr != null) {
             // Allow a package component to change its own meaning
-            PyObject found = Py.getSystemState().modules.__finditem__(fullName);
+            PyObject found = modules.__finditem__(fullName);
             if (found != null) {
                 attr = found;
             }
@@ -124,6 +131,7 @@ public class PyModule extends PyObject {
         return null;
     }
 
+    @Override
     public void __setattr__(String name, PyObject value) {
         module___setattr__(name, value);
     }
@@ -136,6 +144,7 @@ public class PyModule extends PyObject {
         super.__setattr__(name, value);
     }
 
+    @Override
     public void __delattr__(String name) {
         module___delattr__(name);
     }
@@ -145,6 +154,7 @@ public class PyModule extends PyObject {
         super.__delattr__(name);
     }
 
+    @Override
     public String toString()  {
         return module_toString();
     }
@@ -167,6 +177,7 @@ public class PyModule extends PyObject {
         return String.format("<module '%s' from '%s'>", name, filename);
     }
 
+    @Override
     public PyObject __dir__() {
         // Some special casing to ensure that classes deriving from PyModule
         // can use their own __dict__. Although it would be nice to do this in
@@ -192,5 +203,17 @@ public class PyModule extends PyObject {
         if (__dict__ == null) {
             __dict__ = new PyStringMap();
         }
+    }
+
+
+    /* Traverseproc implementation */
+    @Override
+    public int traverse(Visitproc visit, Object arg) {
+        return __dict__ == null ? 0 : visit.visit(__dict__, arg);
+    }
+
+    @Override
+    public boolean refersDirectlyTo(PyObject ob) {
+        return ob != null && ob == __dict__;
     }
 }

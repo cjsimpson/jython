@@ -3,10 +3,8 @@ package org.python.modules._weakref;
 
 import org.python.core.ArgParser;
 import org.python.core.Py;
-import org.python.core.PyList;
 import org.python.core.PyNewWrapper;
 import org.python.core.PyObject;
-import org.python.core.PyTuple;
 import org.python.core.PyType;
 import org.python.expose.ExposedMethod;
 import org.python.expose.ExposedNew;
@@ -17,11 +15,11 @@ public class ReferenceType extends AbstractReference {
 
     public static final PyType TYPE = PyType.fromClass(ReferenceType.class);
 
-    public ReferenceType(PyType subType, GlobalRef gref, PyObject callback) {
+    public ReferenceType(PyType subType, ReferenceBackend gref, PyObject callback) {
         super(subType, gref, callback);
     }
 
-    public ReferenceType(GlobalRef gref, PyObject callback) {
+    public ReferenceType(ReferenceBackend gref, PyObject callback) {
         this(TYPE, gref, callback);
     }
 
@@ -35,7 +33,7 @@ public class ReferenceType extends AbstractReference {
             callback = null;
         }
 
-        GlobalRef gref = GlobalRef.newInstance(ob);
+        ReferenceBackend gref = GlobalRef.newInstance(ob);
         if (new_.for_type == subtype) {
             // NOTE: CPython disallows weakrefs to many builtin types (e.g. dict, list)
             // and would check weakrefability here. We aren't as strict since the JVM can
@@ -44,7 +42,6 @@ public class ReferenceType extends AbstractReference {
             if (callback == null) {
                 ReferenceType ret = (ReferenceType)gref.find(ReferenceType.class);
                 if (ret != null) {
-                    // We can re-use an existing reference.
                     return ret;
                 }
             }
@@ -71,9 +68,9 @@ public class ReferenceType extends AbstractReference {
      * to passthru).
      *
      * @param funcName the name of the caller
-     * @param args PyObject array of args
-     * @param keywords String array of keywords
-     * @return an ArgParser instance
+     * @param args {@link or.python.core.PyObject} array of args
+     * @param keywords {@code String}-array of keywords
+     * @return an {@link or.python.core.ArgParser} instance
      */
     private static ArgParser parseInitArgs(String funcName, PyObject[] args, String[] keywords) {
         if (keywords.length > 0) {
@@ -92,11 +89,11 @@ public class ReferenceType extends AbstractReference {
     @ExposedMethod
     final PyObject weakref___call__(PyObject args[], String keywords[]) {
         new ArgParser("__call__", args, keywords, Py.NoKeywords, 0);
-        return Py.java2py(gref.get());
+        return Py.java2py(get());
     }
 
     public String toString() {
-        PyObject obj = (PyObject)gref.get();
+        PyObject obj = get();
         if (obj == null) {
             return String.format("<weakref at %s; dead>", Py.idstr(this));
         }

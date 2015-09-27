@@ -23,6 +23,7 @@ warnings.filterwarnings("ignore", "tmpnam", RuntimeWarning, __name__)
 # Tests creating TESTFN
 class FileTests(unittest.TestCase):
     def setUp(self):
+        test_support.gc_collect()
         if os.path.exists(test_support.TESTFN):
             os.unlink(test_support.TESTFN)
     tearDown = setUp
@@ -32,8 +33,9 @@ class FileTests(unittest.TestCase):
         os.close(f)
         self.assertTrue(os.access(test_support.TESTFN, os.W_OK))
 
-    @unittest.skipIf(test_support.is_jython,
-                     "Jython does not yet support os.dup.")
+    @unittest.skipIf(test_support.is_jython and os._name == "nt",
+                     "Does not properly close files under Windows")
+    @unittest.skipUnless(hasattr(os, "dup"), "No os.dup function")
     def test_closerange(self):
         first = os.open(test_support.TESTFN, os.O_CREAT|os.O_RDWR)
         # We must allocate two consecutive file descriptors, otherwise
@@ -371,8 +373,6 @@ class EnvironTests(mapping_tests.BasicTestMappingProtocol):
 class WalkTests(unittest.TestCase):
     """Tests for os.walk()."""
 
-    @unittest.skipIf(test_support.is_jython,
-                     "FIXME: investigate in Jython")
     def test_traversal(self):
         import os
         from os.path import join
@@ -578,7 +578,8 @@ class TestInvalidFD(unittest.TestCase):
 
     def check(self, f, *args):
         try:
-            f(test_support.make_bad_fd(), *args)
+            fd = test_support.make_bad_fd()
+            f(fd, *args)
         except OSError as e:
             self.assertEqual(e.errno, errno.EBADF)
         except ValueError:
@@ -587,14 +588,13 @@ class TestInvalidFD(unittest.TestCase):
             self.fail("%r didn't raise a OSError with a bad file descriptor"
                       % f)
 
-    @unittest.skipIf(test_support.is_jython, "FIXME: investigate for Jython")
     def test_isatty(self):
         if hasattr(os, "isatty"):
             self.assertEqual(os.isatty(test_support.make_bad_fd()), False)
 
     def test_closerange(self):
         if hasattr(os, "closerange"):
-            fd = test_support.make_bad_fd()
+            fd = int(test_support.make_bad_fd())  # need to take an int for Jython, given this test
             # Make sure none of the descriptors we are about to close are
             # currently valid (issue 6542).
             for i in range(10):
@@ -624,8 +624,6 @@ class TestInvalidFD(unittest.TestCase):
         if hasattr(os, "fpathconf"):
             self.check(os.fpathconf, "PC_NAME_MAX")
 
-    @unittest.skipIf(test_support.is_jython,
-                     "ftruncate not implemented in Jython")
     def test_ftruncate(self):
         if hasattr(os, "ftruncate"):
             self.check(os.ftruncate, 0)

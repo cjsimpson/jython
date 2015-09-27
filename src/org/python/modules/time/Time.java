@@ -13,17 +13,12 @@
 package org.python.modules.time;
 
 import java.text.DateFormatSymbols;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
 
 import org.python.core.ClassDictInit;
 import org.python.core.Py;
@@ -31,15 +26,23 @@ import org.python.core.PyBuiltinFunctionSet;
 import org.python.core.PyException;
 import org.python.core.PyInteger;
 import org.python.core.PyObject;
-import org.python.core.PySequence;
 import org.python.core.PyString;
 import org.python.core.PyTuple;
 import org.python.core.__builtin__;
+import org.python.core.Untraversable;
 
+@Untraversable
 class TimeFunctions extends PyBuiltinFunctionSet
 {
+    public static final PyObject module = Py.newString("time");
+
     public TimeFunctions(String name, int index, int argcount) {
         super(name, index, argcount);
+    }
+
+    @Override
+    public PyObject getModule() {
+        return module;
     }
 
     public PyObject __call__() {
@@ -56,7 +59,7 @@ class TimeFunctions extends PyBuiltinFunctionSet
 
 public class Time implements ClassDictInit
 {
-    public static PyString __doc__ = new PyString(
+    public static final PyString __doc__ = new PyString(
         "This module provides various functions to manipulate time values.\n"+
         "\n"+
         "There are two standard representations of time.  One is the "+
@@ -453,12 +456,19 @@ public class Time implements ClassDictInit
     }
 
     public static void sleep(double secs) {
-        try {
-            java.lang.Thread.sleep((long)(secs * 1000));
-        }
-        catch (java.lang.InterruptedException e) {
-            throw new PyException(Py.KeyboardInterrupt, "interrupted sleep");
-        }
+	if (secs == 0) {
+	    // Conform to undocumented, or at least very underdocumented, but quite
+	    // reasonable behavior in CPython. See Alex Martelli's answer,
+	    // http://stackoverflow.com/a/790246/423006
+	    java.lang.Thread.yield();
+	} else {
+	    try {
+		java.lang.Thread.sleep((long)(secs * 1000));
+	    }
+	    catch (java.lang.InterruptedException e) {
+		throw new PyException(Py.KeyboardInterrupt, "interrupted sleep");
+	    }
+	}
     }
 
     // set by classDictInit()
@@ -668,7 +678,7 @@ public class Time implements ClassDictInit
             i++;
         }
         // FIXME: This have problems with localized data:
-        //        $ LANG=es_ES.UTF-8 jythont -c "import time; print time.strftime('%A')"
+        //        $ LANG=es_ES.UTF-8 jython -c "import time; print time.strftime('%A')"
         //        s?bado
         //
         //        On the other hand, returning unicode would break some doctests
@@ -678,7 +688,7 @@ public class Time implements ClassDictInit
         //        os.environ)
         //
         // TODO:  Check how CPython deals with this problem.
-        return Py.newStringOrUnicode(s);
+        return Py.newStringUTF8(s);
     }
 
 

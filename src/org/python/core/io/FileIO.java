@@ -2,19 +2,23 @@
 package org.python.core.io;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 
 import jnr.constants.platform.Errno;
+import jnr.posix.util.FieldAccess;
 import jnr.posix.util.Platform;
 import org.python.core.Py;
+import org.python.core.PyObject;
 import org.python.core.PyString;
 import org.python.core.util.RelativeFile;
 import org.python.modules.posix.PosixModule;
@@ -25,6 +29,14 @@ import org.python.modules.posix.PosixModule;
  * @author Philip Jenvey
  */
 public class FileIO extends RawIOBase {
+
+    // would be nicer if we directly imported from os, but crazy to do so
+    // since in python code itself
+    private static class os {
+        public static final int SEEK_SET = 0;
+        public static final int SEEK_CUR = 1;
+        public static final int SEEK_END = 2;
+    }
 
     /** The underlying file channel */
     private FileChannel fileChannel;
@@ -200,7 +212,7 @@ public class FileIO extends RawIOBase {
      */
     private void initPosition() {
         if (appending) {
-            seek(0, 2);
+            seek(0, os.SEEK_END);
         } else if (writing && !reading) {
             try {
                 fileChannel.truncate(0);
@@ -212,12 +224,10 @@ public class FileIO extends RawIOBase {
                 // ERROR_INVALID_HANDLE on ttys. Identifying those by the IOException
                 // message is tedious as their messages are localized, so we suppress them
                 // all =[
-                if (Platform.IS_WINDOWS ||
-                    ((Platform.IS_SOLARIS || Platform.IS_LINUX)
-                     && Errno.EINVAL.description().equals(ioe.getMessage()))) {
-                    return;
-                }
-                throw Py.IOError(ioe);
+                //
+                // Unfortunately attempting to distinguish by localized messages is too hard.
+                // Give up and swallow the exception.
+                // See http://bugs.jython.org/issue1944
             }
         }
     }
@@ -304,11 +314,20 @@ public class FileIO extends RawIOBase {
         checkClosed();
         checkWritable();
         try {
-            return !emulateAppend ? fileChannel.write(buf) :
-                    fileChannel.write(buf, fileChannel.position());
+            return emulateAppend ? appendFromByteBuffer(buf)    // use this helper function to advance the file channel's position post-write
+                                    : fileChannel.write(buf);   // this does change the file channel's position
         } catch (IOException ioe) {
             throw Py.IOError(ioe);
         }
+    }
+
+    private int appendFromByteBuffer(ByteBuffer buf) throws IOException {
+        int written = fileChannel.write(buf, fileChannel.position());   // this does not change the file channel's position!
+        if (written > 0) {
+            // we need to manually update the file channel's position post-write
+            fileChannel.position(fileChannel.position() + written);
+        }
+        return written;
     }
 
     /**
@@ -342,7 +361,8 @@ public class FileIO extends RawIOBase {
             if (!buf.hasRemaining()) {
                 continue;
             }
-            if ((bufCount = fileChannel.write(buf, fileChannel.position())) == 0) {
+            bufCount = appendFromByteBuffer(buf);
+            if (bufCount == 0) {
                 break;
             }
             count += bufCount;
@@ -355,12 +375,12 @@ public class FileIO extends RawIOBase {
         checkClosed();
         try {
             switch (whence) {
-            case 0:
+            case os.SEEK_SET:
                 break;
-            case 1:
+            case os.SEEK_CUR:
                 pos += fileChannel.position();
                 break;
-            case 2:
+            case os.SEEK_END:
                 pos += fileChannel.size();
                 break;
             default:
@@ -434,5 +454,38 @@ public class FileIO extends RawIOBase {
     @Override
     public FileChannel getChannel() {
         return fileChannel;
+    }
+
+    public FileDescriptor getFD() {
+        if (file != null) {
+            try {
+                return file.getFD();
+            } catch (IOException ioe) {
+                throw Py.OSError(ioe);
+            }
+        } else if (fileOutputStream != null) {
+            try {
+                return fileOutputStream.getFD();
+            } catch (IOException ioe) {
+                throw Py.OSError(ioe);
+            }
+        }
+        throw Py.OSError(Errno.EBADF);
+    }
+
+    public PyObject __int__() {
+        int intFD = -1;
+        try {
+            Field fdField = FieldAccess.getProtectedField(FileDescriptor.class, "fd");
+            intFD = fdField.getInt(getFD());
+        } catch (SecurityException e) {
+        } catch (IllegalArgumentException e) {
+        } catch (IllegalAccessException e) {
+        }
+        return Py.newInteger(intFD);
+    }
+
+    public PyObject __add__(PyObject otherObj) {
+        return __int__().__add__(otherObj);
     }
 }

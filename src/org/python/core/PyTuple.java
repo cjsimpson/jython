@@ -26,8 +26,6 @@ public class PyTuple extends PySequenceList implements List {
 
     private volatile List<PyObject> cachedList = null;
 
-    private static final PyTuple EMPTY_TUPLE = new PyTuple();
-
     public PyTuple() {
         this(TYPE, Py.EmptyObjects);
     }
@@ -79,7 +77,7 @@ public class PyTuple extends PySequenceList implements List {
         PyObject S = ap.getPyObject(0, null);
         if (new_.for_type == subtype) {
             if (S == null) {
-                return EMPTY_TUPLE;
+                return Py.EmptyTuple;
             }
             if (S instanceof PyTupleDerived) {
                 return new PyTuple(((PyTuple) S).getArray());
@@ -136,7 +134,7 @@ public class PyTuple extends PySequenceList implements List {
                 return this;
             }
             if (size == 0) {
-                return EMPTY_TUPLE;
+                return Py.EmptyTuple;
             }
         }
 
@@ -605,5 +603,51 @@ public class PyTuple extends PySequenceList implements List {
             }
         }
         return converted;
+    }
+
+
+    /* Traverseproc implementation */
+    @Override
+    public int traverse(Visitproc visit, Object arg) {
+        int retVal;
+        for (PyObject ob: array) {
+            if (ob != null) {
+                retVal = visit.visit(ob, arg);
+                if (retVal != 0) {
+                    return retVal;
+                }
+            }
+        }
+        if (cachedList != null) {
+            for (PyObject ob: cachedList) {
+                if (ob != null) {
+                    retVal = visit.visit(ob, arg);
+                    if (retVal != 0) {
+                        return retVal;
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+
+    @Override
+    public boolean refersDirectlyTo(PyObject ob) {
+        if (ob == null) {
+            return false;
+        }
+        for (PyObject obj: array) {
+            if (obj == ob) {
+                return true;
+            }
+        }
+        if (cachedList != null) {
+            for (PyObject obj: cachedList) {
+                if (obj == ob) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

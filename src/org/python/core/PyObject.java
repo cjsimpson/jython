@@ -8,7 +8,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import org.python.core.finalization.FinalizeTrigger;
 import org.python.expose.ExposedClassMethod;
 import org.python.expose.ExposedDelete;
 import org.python.expose.ExposedGet;
@@ -17,25 +16,49 @@ import org.python.expose.ExposedNew;
 import org.python.expose.ExposedSet;
 import org.python.expose.ExposedType;
 import org.python.util.Generic;
+import org.python.modules.gc;
 
 /**
  * All objects known to the Jython runtime system are represented by an instance
- * of the class <code>PyObject</code> or one of its subclasses.
+ * of the class {@code PyObject} or one of its subclasses.
  */
 @ExposedType(name = "object", doc = BuiltinDocs.object_doc)
 public class PyObject implements Serializable {
 
     public static final PyType TYPE = PyType.fromClass(PyObject.class);
 
-    /** The type of this object. */
+    /**
+     * This should have been suited at {@link org.python.modules.gc},
+     * but that would cause a dependency cycle in the init-phases of
+     * {@code gc.class} and {@code PyObject.class}. Now this boolean
+     * mirrors the presence of the
+     * {@link org.python.modules.gc#MONITOR_GLOBAL}-flag in Jython's
+     * gc module.<br>
+     * <br>
+     * <b>Do not change manually.</b>
+     */
+    public static boolean gcMonitorGlobal = false;
+
+    /** The type of this object.
+     */
     protected PyType objtype;
 
     /**
-     * An underlying Java instance that this object is wrapping or is a subclass
-     * of. Anything attempting to use the proxy should go through {@link #getJavaProxy()}
-     * which ensures that it's initialized.
+     * {@code attributes} is a general purpose linked list of arbitrary
+     * Java objects that should be kept alive by this PyObject. These
+     * objects can be accessed by the methods and keys in
+     * {@link org.python.core.JyAttribute}.
+     * A notable attribute is the javaProxy (accessible via
+     * {@code JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR)}),
+     * an underlying Java instance that this object is wrapping or is a
+     * subclass of. Anything attempting to use the proxy should go through
+     * {@link #getJavaProxy()} which ensures that it's initialized.
+     *
+     * @see org.python.core.JyAttribute
+     * @see org.python.core.JyAttribute#JAVA_PROXY_ATTR
+     * @see #getJavaProxy()
      */
-    protected Object javaProxy;
+    protected Object attributes;
 
     /** Primitives classes their wrapper classes. */
     private static final Map<Class<?>, Class<?>> primitiveMap = Generic.map();
@@ -58,6 +81,8 @@ public class PyObject implements Serializable {
 
     public PyObject(PyType objtype) {
         this.objtype = objtype;
+        if (gcMonitorGlobal)
+            gc.monitorObject(this);
     }
 
     /**
@@ -66,6 +91,8 @@ public class PyObject implements Serializable {
      **/
     public PyObject() {
         objtype = PyType.fromClass(getClass(), false);
+        if (gcMonitorGlobal)
+            gc.monitorObject(this);
     }
 
     /**
@@ -74,6 +101,8 @@ public class PyObject implements Serializable {
      */
     PyObject(boolean ignored) {
         objtype = (PyType)this;
+        if (gcMonitorGlobal)
+            gc.monitorObject(this);
     }
 
     @ExposedNew
@@ -96,7 +125,7 @@ public class PyObject implements Serializable {
             throw Py.TypeError(String.format("Can't instantiate abstract class %s with abstract "
                                              + "methods %s", subtype.fastGetName(), methods));
         }
-        
+
         return new_.for_type == subtype ? new PyObject() : new PyObjectDerived(subtype);
     }
 
@@ -156,6 +185,7 @@ public class PyObject implements Serializable {
      */
     void proxyInit() {
         Class<?> c = getType().getProxyType();
+        Object javaProxy = JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR);
         if (javaProxy != null || c == null) {
             return;
         }
@@ -183,6 +213,7 @@ public class PyObject implements Serializable {
         } finally {
             ThreadContext.initializingProxy.set(previous);
         }
+        javaProxy = JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR);
         if (javaProxy != null && javaProxy != proxy) {
             throw Py.TypeError("Proxy instance already initialized");
         }
@@ -190,7 +221,7 @@ public class PyObject implements Serializable {
         if (proxyInstance != null && proxyInstance != this) {
             throw Py.TypeError("Proxy initialized with another instance");
         }
-        javaProxy = proxy;
+        JyAttribute.setAttr(this, JyAttribute.JAVA_PROXY_ATTR, proxy);
     }
 
     /**
@@ -306,7 +337,7 @@ public class PyObject implements Serializable {
      **/
     public Object __tojava__(Class<?> c) {
         if ((c == Object.class || c == Serializable.class) && getJavaProxy() != null) {
-            return javaProxy;
+            return JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR);
         }
         if (c.isInstance(this)) {
             return this;
@@ -318,7 +349,7 @@ public class PyObject implements Serializable {
             }
         }
         if (c.isInstance(getJavaProxy())) {
-            return javaProxy;
+            return JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR);
         }
 
         // convert faux floats
@@ -338,10 +369,10 @@ public class PyObject implements Serializable {
     }
 
     protected synchronized Object getJavaProxy() {
-        if (javaProxy == null) {
+        if (!JyAttribute.hasAttr(this, JyAttribute.JAVA_PROXY_ATTR)) {
             proxyInit();
         }
-        return javaProxy;
+        return JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR);
     }
 
     /**
@@ -587,6 +618,15 @@ public class PyObject implements Serializable {
 
     public boolean isSequenceType() {
         return getType().lookup("__getitem__") != null;
+    }
+
+    /**
+     * Determine if this object can act as an int (implements __int__).
+     *
+     * @return true if the object can act as an int
+     */
+    public boolean isInteger() {
+        return getType().lookup("__int__") != null;
     }
 
     /**
@@ -1675,7 +1715,9 @@ public class PyObject implements Serializable {
     public PyObject _is(PyObject o) {
         // Access javaProxy directly here as is is for object identity, and at best getJavaProxy
         // will initialize a new object with a different identity
-        return this == o || (javaProxy != null && javaProxy == o.javaProxy) ? Py.True : Py.False;
+        return this == o || (JyAttribute.hasAttr(this, JyAttribute.JAVA_PROXY_ATTR) &&
+            JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR) ==
+            JyAttribute.getAttr(o, JyAttribute.JAVA_PROXY_ATTR)) ? Py.True : Py.False;
     }
 
     /**
@@ -1687,7 +1729,9 @@ public class PyObject implements Serializable {
     public PyObject _isnot(PyObject o) {
         // Access javaProxy directly here as is is for object identity, and at best getJavaProxy
         // will initialize a new object with a different identity
-        return this != o && (javaProxy == null || javaProxy != o.javaProxy) ? Py.True : Py.False;
+        return this != o && (!JyAttribute.hasAttr(this, JyAttribute.JAVA_PROXY_ATTR) ||
+                JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR) !=
+                JyAttribute.getAttr(o, JyAttribute.JAVA_PROXY_ATTR)) ? Py.True : Py.False;
     }
 
     /**
@@ -3906,6 +3950,25 @@ public class PyObject implements Serializable {
     }
 
     /**
+     * A common helper method, use to prevent infinite recursion
+     * when a Python object implements __reduce__ and sometimes calls
+     * object.__reduce__. Trying to do it all in __reduce__ex__ caused
+     # this problem. See http://bugs.jython.org/issue2323.
+     */
+    private PyObject commonReduce(int proto) {
+        PyObject res;
+
+        if (proto >= 2) {
+            res = reduce_2();
+        } else {
+            PyObject copyreg = __builtin__.__import__("copy_reg", null, null, Py.EmptyTuple);
+            PyObject copyreg_reduce = copyreg.__findattr__("_reduce_ex");
+            res = copyreg_reduce.__call__(this, new PyInteger(proto));
+        }
+        return res;
+    }
+
+    /**
      * Used for pickling.  Default implementation calls object___reduce__.
      *
      * @return a tuple of (class, tuple)
@@ -3916,7 +3979,7 @@ public class PyObject implements Serializable {
 
     @ExposedMethod(doc = BuiltinDocs.object___reduce___doc)
     final PyObject object___reduce__() {
-        return object___reduce_ex__(0);
+        return commonReduce(0);
     }
 
     /** Used for pickling.  If the subclass specifies __reduce__, it will
@@ -3943,12 +4006,8 @@ public class PyObject implements Serializable {
 
         if (clsreduce != objreduce) {
             res = this.__reduce__();
-        } else if (arg >= 2) {
-            res = reduce_2();
         } else {
-            PyObject copyreg = __builtin__.__import__("copy_reg", null, null, Py.EmptyTuple);
-            PyObject copyreg_reduce = copyreg.__findattr__("_reduce_ex");
-            res = copyreg_reduce.__call__(this, new PyInteger(arg));
+            res = commonReduce(arg);
         }
         return res;
     }
@@ -4196,7 +4255,7 @@ public class PyObject implements Serializable {
  * by hashing and comparing its elements by identity.
  */
 
-class PyIdentityTuple extends PyObject {
+class PyIdentityTuple extends PyObject implements Traverseproc {
 
     PyObject[] list;
 
@@ -4232,4 +4291,34 @@ class PyIdentityTuple extends PyObject {
         return true;
     }
 
+
+    /* Traverseproc implementation */
+    @Override
+    public int traverse(Visitproc visit, Object arg) {
+        if (list != null) {
+            int retVal;
+            for (PyObject ob: list) {
+                if (ob != null) {
+                    retVal = visit.visit(ob, arg);
+                    if (retVal != 0) {
+                        return retVal;
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+
+    @Override
+    public boolean refersDirectlyTo(PyObject ob) {
+        if (ob == null || list == null) {
+            return false;
+        }
+        for (PyObject obj: list) {
+            if (ob == obj) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

@@ -19,6 +19,7 @@ import jnr.constants.platform.Errno;
 
 import org.python.core.PlainConsole;
 import org.python.core.PyObject;
+import org.python.core.Py;
 
 /**
  * This class uses <a href="http://jline.sourceforge.net/">JLine</a> to provide readline like
@@ -110,6 +111,9 @@ public class JLineConsole extends PlainConsole {
 
             // We find the bell too noisy
             reader.setBellEnabled(false);
+
+            // Do not attempt to expand ! in the input
+            reader.setExpandEvents(false);
 
             /*
              * Everybody else, using sys.stdout or java.lang.System.out, gets to write on a special
@@ -259,6 +263,10 @@ public class JLineConsole extends PlainConsole {
      * Sets the startup hook (called prior to each readline)
      */
     public void setStartupHook(PyObject hook) {
+        // Convert None to null here, so that readerReadLine can use only a null check
+        if (hook == Py.None) {
+            hook = null;
+        }
         startup_hook = hook;
     }
 }

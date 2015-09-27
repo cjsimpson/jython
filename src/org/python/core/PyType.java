@@ -30,7 +30,7 @@ import com.google.common.collect.MapMaker;
  * The Python Type object implementation.
  */
 @ExposedType(name = "type", doc = BuiltinDocs.type_doc)
-public class PyType extends PyObject implements Serializable {
+public class PyType extends PyObject implements Serializable, Traverseproc {
 
     public static final PyType TYPE = fromClass(PyType.class);
 
@@ -102,7 +102,7 @@ public class PyType extends PyObject implements Serializable {
     /** Mapping of Java classes to their PyTypes. */
     private static Map<Class<?>, PyType> class_to_type;
     private static Set<PyType> exposedTypes;
-    
+
     /** Mapping of Java classes to their TypeBuilders. */
     private static Map<Class<?>, TypeBuilder> classToBuilder;
 
@@ -255,19 +255,31 @@ public class PyType extends PyObject implements Serializable {
 
                 if (slotName.equals("__dict__")) {
                     if (!mayAddDict || wantDict) {
-                        throw Py.TypeError("__dict__ slot disallowed: we already got one");
+                        // CPython is stricter here, but this seems arbitrary. To reproduce CPython
+                        // behavior
+                        // if (base != PyObject.TYPE) {
+                        //     throw Py.TypeError("__dict__ slot disallowed: we already got one");
+                        // }
+                    } else {
+                        wantDict = true;
+                        continue;
                     }
-                    wantDict = true;
                 } else if (slotName.equals("__weakref__")) {
-                    if (!mayAddWeak || wantWeak) {
-                        throw Py.TypeError("__weakref__ slot disallowed: we already got one");
+                    if ((!mayAddWeak || wantWeak) && base != PyObject.TYPE) {
+                        // CPython is stricter here, but this seems arbitrary. To reproduce CPython
+                        // behavior
+                        // if (base != PyObject.TYPE) {
+                        //     throw Py.TypeError("__weakref__ slot disallowed: we already got one");
+                        // }
+                    } else {
+                        wantWeak = true;
+                        continue;
                     }
-                    wantWeak = true;
-                } else {
-                    slotName = mangleName(name, slotName);
-                    if (dict.__finditem__(slotName) == null) {
-                        dict.__setitem__(slotName, new PySlot(this, slotName, numSlots++));
-                    }
+                }
+
+                slotName = mangleName(name, slotName);
+                if (dict.__finditem__(slotName) == null) {
+                    dict.__setitem__(slotName, new PySlot(this, slotName, numSlots++));
                 }
             }
 
@@ -668,7 +680,7 @@ public class PyType extends PyObject implements Serializable {
         }
         Class<?> proxyClass = MakeProxies.makeProxy(baseProxyClass, interfaces, name, proxyName,
                                                     dict);
-        javaProxy = proxyClass;
+        JyAttribute.setAttr(this, JyAttribute.JAVA_PROXY_ATTR, proxyClass); 
 
         PyType proxyType = PyType.fromClass(proxyClass, false);
         List<PyObject> cleanedBases = Generic.list();
@@ -932,7 +944,7 @@ public class PyType extends PyObject implements Serializable {
      * Returns the Java Class that this type inherits from, or null if this type is Python-only.
      */
     public Class<?> getProxyType() {
-        return (Class<?>)javaProxy;
+        return (Class<?>) JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR);
     }
 
     private synchronized void attachSubclass(PyType subtype) {
@@ -1022,7 +1034,8 @@ public class PyType extends PyObject implements Serializable {
 
     PyObject[] computeMro(MROMergeState[] toMerge, List<PyObject> mro) {
         boolean addedProxy = false;
-        PyType proxyAsType = javaProxy == null ? null : PyType.fromClass(((Class<?>)javaProxy), false);
+        PyType proxyAsType = !JyAttribute.hasAttr(this, JyAttribute.JAVA_PROXY_ATTR) ?
+            null : PyType.fromClass(((Class<?>)JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR)), false);
         scan : for (int i = 0; i < toMerge.length; i++) {
             if (toMerge[i].isMerged()) {
                 continue scan;
@@ -1035,9 +1048,11 @@ public class PyType extends PyObject implements Serializable {
                 }
             }
             if (!addedProxy && !(this instanceof PyJavaType) && candidate instanceof PyJavaType
-                    && candidate.javaProxy != null
-                    && PyProxy.class.isAssignableFrom(((Class<?>)candidate.javaProxy))
-                    && candidate.javaProxy != javaProxy) {
+                    && JyAttribute.hasAttr(candidate, JyAttribute.JAVA_PROXY_ATTR)
+                    && PyProxy.class.isAssignableFrom(
+                        ((Class<?>)JyAttribute.getAttr(candidate, JyAttribute.JAVA_PROXY_ATTR)))
+                    && JyAttribute.getAttr(candidate, JyAttribute.JAVA_PROXY_ATTR) !=
+                        JyAttribute.getAttr(this, JyAttribute.JAVA_PROXY_ATTR)) {
                 // If this is a subclass of a Python class that subclasses a Java class, slip the
                 // proxy for this class in before the proxy class in the superclass' mro.
                 // This exposes the methods from the proxy generated for this class in addition to
@@ -1235,6 +1250,7 @@ public class PyType extends PyObject implements Serializable {
      * @return found object or null
      */
     public PyObject lookup_where(String name, PyObject[] where) {
+    	if (methodCache == null) System.out.println("method cache is null");
         return methodCache.lookup_where(this, name, where);
     }
 
@@ -1269,6 +1285,7 @@ public class PyType extends PyObject implements Serializable {
     }
 
     public PyObject super_lookup(PyType ref, String name) {
+        String lookupName;  // the method name to lookup
         PyObject[] mro = this.mro;
         if (mro == null) {
             return null;
@@ -1280,11 +1297,28 @@ public class PyType extends PyObject implements Serializable {
         }
         i++;
         for (; i < mro.length; i++) {
+            if (mro[i] instanceof PyJavaType) {
+                // The MRO contains this proxy for classes extending a Java class and/or
+                // interfaces, but the proxy points back to this starting Python class.
+                // So break out of this infinite loop by ignoring this entry for super purposes.
+                // The use of super__ parallels the workaround seen in PyReflectedFunction
+                // Fixes http://bugs.jython.org/issue1540
+                // Also ignore this if we're doing super during __init__ as we want it to behave
+                // Fixes http://bugs.jython.org/issue2375
+                if(name != "__init__" && !name.startsWith("super__")) {
+                     lookupName = "super__" + name;
+                } else {
+                    lookupName = name;
+                }
+            } else {
+                lookupName = name;
+            }
             PyObject dict = mro[i].fastGetDict();
             if (dict != null) {
-                PyObject obj = dict.__finditem__(name);
-                if (obj != null)
+                PyObject obj = dict.__finditem__(lookupName);
+                if (obj != null) {
                     return obj;
+                }
             }
         }
         return null;
@@ -2093,5 +2127,66 @@ public class PyType extends PyObject implements Serializable {
                 return get();
             }
         }
+    }
+
+
+    /* Traverseproc implementation */
+    @Override
+    public int traverse(Visitproc visit, Object arg) {
+        int retVal;
+        if (base != null) {
+            retVal = visit.visit(base, arg);
+            if (retVal != 0) {
+                return retVal;
+            }
+        }
+        //bases cannot be null
+        for (PyObject ob: bases) {
+            if (ob != null) {
+                retVal = visit.visit(ob, arg);
+                if (retVal != 0) {
+                    return retVal;
+                }
+            }
+        }
+        if (dict != null) {
+            retVal = visit.visit(dict, arg);
+            if (retVal != 0) {
+                return retVal;
+            }
+        }
+        if (mro != null) {
+            for (PyObject ob: mro) {
+                retVal = visit.visit(ob, arg);
+                if (retVal != 0) {
+                    return retVal;
+                }
+            }
+        }
+        //don't traverse subclasses since they are weak refs.
+        //ReferenceQueue<PyType> subclasses_refq = new ReferenceQueue<PyType>();
+        //Set<WeakReference<PyType>> subclasses = Generic.set();
+        return 0;
+    }
+
+    @Override
+    public boolean refersDirectlyTo(PyObject ob) throws UnsupportedOperationException {
+        if (ob == null) {
+            return false;
+        }
+        //bases cannot be null
+        for (PyObject obj: bases) {
+            if (obj == ob) {
+                return true;
+            }
+        }
+        if (mro != null) {
+            for (PyObject obj: mro) {
+                if (obj == ob) {
+                    return true;
+                }
+            }
+        }
+        return ob == base || ob == dict;
     }
 }

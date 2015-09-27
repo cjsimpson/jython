@@ -4,12 +4,15 @@
 
 Made for Jython.
 """
-import array
-import glob
 import os
-import subprocess
 import sys
+import glob
+import array
+import errno
+import struct
 import unittest
+import subprocess
+
 from test import test_support
 from java.io import File
 
@@ -57,6 +60,69 @@ class OSFileTestCase(unittest.TestCase):
                 self.assertEqual(e.filename, testfnu)
             else:
                 self.assertTrue(False)
+
+    def test_issue2068(self):
+        os.remove(test_support.TESTFN)
+        for i in range(2):
+            fd = os.open(test_support.TESTFN, os.O_RDWR | os.O_CREAT | os.O_APPEND)
+            try:
+                os.write(fd, bytes('one'))
+                os.write(fd, bytes('two'))
+                os.write(fd, bytes('three'))
+            finally:
+                fd.close()
+
+        with open(test_support.TESTFN, 'rb') as f:
+            content = f.read()
+        self.assertEqual(content, 2 * b'onetwothree')
+
+    def test_issue1793(self):
+        # prepare the input file containing 256 bytes of sorted byte-sized numbers
+        fd = file(test_support.TESTFN, 'wb')
+        try:
+            for x in range(256):
+                fd.write(chr(x))
+        finally:
+            fd.close()
+
+        # reopen in read/append mode
+        fd = file(test_support.TESTFN, 'rb+')
+        try:
+            # read forward from the beginning
+            for x in range(256):
+                pos = fd.tell()
+                self.assertEqual(pos, x,
+                        '[forward] before read: pos should be %d but is %d' % (x, pos))
+
+                # read just one byte
+                c = struct.unpack('B', fd.read(1))[0]
+
+                pos = fd.tell()
+                self.assertEqual(pos, x + 1,
+                        '[forward] after read: pos should be %d but is %d' % (x + 1, pos))
+                
+                self.assertEqual(c, x)
+
+            # read backward from the end
+            fd.seek(-1, os.SEEK_END)
+            for x in range(255, -1, -1):
+                pos = fd.tell()
+                self.assertEqual(pos, x,
+                        '[backward] before read: pos should be %d but is %d' % (x, pos))
+
+                # read just one byte
+                c = ord(fd.read(1))
+
+                pos = fd.tell()
+                self.assertEqual(pos, x + 1,
+                        '[backward] after read: pos should be %d but is %d' % (x + 1, pos))
+                
+                self.assertEqual(c, x)
+
+                if x > 0:
+                    fd.seek(-2, os.SEEK_CUR)
+        finally:
+            fd.close()
 
 
 class OSDirTestCase(unittest.TestCase):
@@ -173,14 +239,26 @@ class UnicodeTestCase(unittest.TestCase):
            
             # glob.glob builds on os.listdir; note that we don't use
             # Unicode paths in the arg to glob
-            self.assertEqual(glob.glob("unicode/*"), [u"unicode/中文"])
-            self.assertEqual(glob.glob("unicode/*/*"), [u"unicode/中文/首页"])
-            self.assertEqual(glob.glob("unicode/*/*/*"), [u"unicode/中文/首页/test.txt"])
+            self.assertEqual(
+                glob.glob(os.path.join("unicode", "*")),
+                [os.path.join(u"unicode", u"中文")])
+            self.assertEqual(
+                glob.glob(os.path.join("unicode", "*", "*")),
+                [os.path.join(u"unicode", u"中文", u"首页")])
+            self.assertEqual(
+                glob.glob(os.path.join("unicode", "*", "*", "*")),
+                [os.path.join(u"unicode", u"中文", u"首页", "test.txt")])
 
-            # Now use a Unicode path as well as the glob arg
-            self.assertEqual(glob.glob(u"unicode/*"), [u"unicode/中文"])
-            self.assertEqual(glob.glob(u"unicode/*/*"), [u"unicode/中文/首页"])
-            self.assertEqual(glob.glob(u"unicode/*/*/*"), [u"unicode/中文/首页/test.txt"])
+            # Now use a Unicode path as well as in the glob arg
+            self.assertEqual(
+                glob.glob(os.path.join(u"unicode", "*")),
+                [os.path.join(u"unicode", u"中文")])
+            self.assertEqual(
+                glob.glob(os.path.join(u"unicode", "*", "*")),
+                [os.path.join(u"unicode", u"中文", u"首页")])
+            self.assertEqual(
+                glob.glob(os.path.join(u"unicode", "*", "*", "*")),
+                [os.path.join(u"unicode", u"中文", u"首页", "test.txt")])
  
             # Verify Java integration. But we will need to construct
             # an absolute path since chdir doesn't work with Java
@@ -201,8 +279,8 @@ class LocaleTestCase(unittest.TestCase):
         try:
             installed_codes = dict(((normalize(code), code) for 
                                     code in subprocess.check_output(["locale", "-a"]).split()))
-        except subprocess.CalledProcessError:
-            unittest.skip("locale command not available, cannot test")
+        except (subprocess.CalledProcessError, OSError):
+            raise unittest.SkipTest("locale command not available, cannot test")
 
         if msg is None:
             msg = "One of %s tested locales is not installed" % (codes,)
@@ -231,7 +309,7 @@ class LocaleTestCase(unittest.TestCase):
         self.get_installed_locales(["tr_TR.UTF-8"], "Turkish locale not installed, cannot test")
         newenv = os.environ.copy()
         newenv["LC_ALL"] = "tr_TR.UTF-8"  # set to Turkish locale
-        self.assertEqual(
+        self.assertIn(
             subprocess.check_output(
                 [sys.executable, "-c",
                  'print repr(["I".lower(), u"I".lower(), "i".upper(), u"i".upper()])'],
@@ -239,7 +317,11 @@ class LocaleTestCase(unittest.TestCase):
             # Should not convert str for 'i'/'I', but should convert
             # unicode if in Turkish locale; this behavior intentionally is
             # different than CPython; see also http://bugs.python.org/issue17252
-            "['i', u'\\u0131', 'I', u'\\u0130']\n")
+            # 
+            # Note that JVMs seem to have some latitude here however, so support
+            # either for now.
+            ["['i', u'\\u0131', 'I', u'\\u0130']\n",
+             "['i', u'i', 'I', u'I']\n"])
 
     def test_strptime_locale(self):
         # Verifies fix of http://bugs.jython.org/issue2261
@@ -256,6 +338,112 @@ class LocaleTestCase(unittest.TestCase):
                     env=newenv),
                 "2015-01-22 00:00:00\n")
 
+    def test_strftime_japanese_locale(self):
+        # Verifies fix of http://bugs.jython.org/issue2301 - produces
+        # UTF-8 encoded output per what CPython does, rather than Unicode.
+        # We will revisit in Jython 3.x!
+        self.get_installed_locales("ja_JP.UTF-8")
+        self.assertEqual(
+            subprocess.check_output(
+                [sys.executable, 
+                 "-J-Duser.country=JP", "-J-Duser.language=ja",
+                 "-c",
+                 "import time; print repr(time.strftime('%c', (2015, 3, 29, 14, 55, 13, 6, 88, 0)))"]),
+            "'\\xe6\\x97\\xa5 3 29 14:55:13 2015'\n")
+        
+
+class SystemTestCase(unittest.TestCase):
+
+    def test_system_no_site_import(self):
+        # If not importing site (-S), importing traceback previously
+        # would fail with an import error due to creating a circular
+        # import chain. This root cause is because the os module
+        # imports the subprocess module for the system function; but
+        # the subprocess module imports from os. Verrifies that this
+        # managed by making the import late; also verify the
+        # monkeypatching optimization is successful by calling
+        # os.system twice.
+        with test_support.temp_cwd() as temp_cwd:
+            self.assertEqual(
+                subprocess.check_output(
+                    [sys.executable, "-S", "-c",
+                     "import traceback; import os; os.system('echo 42'); os.system('echo 47')"])\
+                .replace("\r", ""),  # in case of running on Windows
+                "42\n47\n")
+
+
+@unittest.skipUnless(hasattr(os, 'link'), "os.link not available")
+class LinkTestCase(unittest.TestCase):
+
+    def test_bad_link(self):
+        with test_support.temp_cwd() as new_cwd:
+            target = os.path.join(new_cwd, "target")
+            with open(target, "w") as f:
+                f.write("TARGET")
+            source = os.path.join(new_cwd, "source")
+            with self.assertRaises(OSError) as cm:
+                os.link(target, target)
+            self.assertEqual(cm.exception.errno, errno.EEXIST)
+
+            with self.assertRaises(OSError) as cm:
+                os.link("nonexistent-file", source)
+            self.assertEqual(cm.exception.errno, errno.ENOENT)
+
+    def test_link(self):
+        with test_support.temp_cwd() as new_cwd:
+            target = os.path.join(new_cwd, "target")
+            with open(target, "w") as f:
+                f.write("TARGET")
+            source = os.path.join(new_cwd, "source")
+            os.link(target, source)
+            with open(source, "r") as f:
+                self.assertEqual(f.read(), "TARGET")
+
+
+@unittest.skipUnless(hasattr(os, 'symlink'), "symbolic link support  not available")
+class SymbolicLinkTestCase(unittest.TestCase):
+
+    def test_bad_symlink(self):
+        with test_support.temp_cwd() as new_cwd:
+            target = os.path.join(new_cwd, "target")
+            with open(target, "w") as f:
+                f.write("TARGET")
+            source = os.path.join(new_cwd, "source")
+            with self.assertRaises(OSError) as cm:
+                os.symlink(source, target)  # reversed args!
+            self.assertEqual(cm.exception.errno, errno.EEXIST)
+
+    def test_readlink(self):
+        with test_support.temp_cwd() as new_cwd:
+            target = os.path.join(new_cwd, "target")
+            with open(target, "w") as f:
+                f.write("TARGET")
+            source = os.path.join(new_cwd, "source")
+            os.symlink(target, source)
+            self.assertEqual(os.readlink(source), target)
+            self.assertEqual(os.readlink(unicode(source)), unicode(target))
+            self.assertIsInstance(os.readlink(unicode(source)), unicode)
+            
+    def test_readlink_non_symlink(self):
+        """os.readlink of a non symbolic link should raise an error"""
+        # test for http://bugs.jython.org/issue2292
+        with test_support.temp_cwd() as new_cwd:
+            target = os.path.join(new_cwd, "target")
+            with open(target, "w") as f:
+                f.write("TARGET")
+            with self.assertRaises(OSError) as cm:
+                os.readlink(target)
+            self.assertEqual(cm.exception.errno, errno.EINVAL)
+            self.assertEqual(cm.exception.filename, target)
+
+    def test_readlink_nonexistent(self):
+        with test_support.temp_cwd() as new_cwd:
+            nonexistent_file = os.path.join(new_cwd, "nonexistent-file")
+            with self.assertRaises(OSError) as cm:
+                os.readlink(nonexistent_file)
+            self.assertEqual(cm.exception.errno, errno.ENOENT)
+            self.assertEqual(cm.exception.filename, nonexistent_file)
+
 
 def test_main():
     test_support.run_unittest(
@@ -265,6 +453,9 @@ def test_main():
         OSWriteTestCase,
         UnicodeTestCase,
         LocaleTestCase,
+        SystemTestCase,
+        LinkTestCase,
+        SymbolicLinkTestCase,
     )
 
 if __name__ == '__main__':

@@ -9,6 +9,8 @@ import org.python.core.PyType;
 import org.python.core.Py;
 import org.python.core.PyException;
 import org.python.core.ThreadState;
+import org.python.core.Traverseproc;
+import org.python.core.Visitproc;
 import org.python.expose.ExposedGet;
 import org.python.expose.ExposedMethod;
 import org.python.expose.ExposedNew;
@@ -33,7 +35,7 @@ import org.python.expose.MethodType;
  * items are added, a corresponding number of items are discarded from the opposite end.
  */
 @ExposedType(name = "collections.deque")
-public class PyDeque extends PyObject {
+public class PyDeque extends PyObject implements Traverseproc {
 
     public static final PyType TYPE = PyType.fromClass(PyDeque.class);
 
@@ -105,7 +107,7 @@ public class PyDeque extends PyObject {
 
     /**
      * Add obj to the right side of the deque.
-     */	
+     */    
     @ExposedMethod
     public synchronized final void deque_append(PyObject obj) {
         if (maxlen >= 0) {
@@ -625,7 +627,7 @@ public class PyDeque extends PyObject {
 
     @ExposedMethod
     final PyObject deque___copy__() {
-        PyDeque pd = (PyDeque)this.getType().__call__();	
+        PyDeque pd = (PyDeque)this.getType().__call__();    
         pd.deque_extend(this);
         return pd;
     }
@@ -674,5 +676,65 @@ public class PyDeque extends PyObject {
                 return null;
             }
         }
+
+
+        /* Traverseproc implementation */
+        @Override
+        public int traverse(Visitproc visit, Object arg) {
+            int retVal = super.traverse(visit, arg);
+            if (retVal != 0) {
+                return retVal;
+            }
+            /* On first thought one would traverse the circular list
+             * starting with lastReturned. However due to synchronization
+             * it is guaranteed that this would traverse the same objects
+             * as starting with header would do. So we can simply call the
+             * traverse-method of PyDeque.this.
+             */
+            return PyDeque.this.traverse(visit, arg);
+        }
+
+        @Override
+        public boolean refersDirectlyTo(PyObject ob) throws UnsupportedOperationException {
+            if (ob == null) {
+                return false;
+            } else if (super.refersDirectlyTo(ob)) {
+                return true;
+            } else {
+                throw new UnsupportedOperationException();
+            }
+        }
+    }
+
+
+    /* Traverseproc implementation */
+    @Override
+    public synchronized int traverse(Visitproc visit, Object arg) {
+    	if (header == null) {
+            return 0;
+        }
+        int retVal = 0;
+        if (header.data != null) {
+            retVal = visit.visit(header.data, arg);
+            if (retVal != 0) {
+                return retVal;
+            }
+        }
+        Node tmp = header.right;
+        while (tmp != header) {
+            if (tmp.data != null) {
+                retVal = visit.visit(tmp.data, arg);
+                if (retVal != 0) {
+                    return retVal;
+                }
+            }
+            tmp = tmp.right;
+        }
+        return retVal;
+    }
+
+    @Override
+    public boolean refersDirectlyTo(PyObject ob) throws UnsupportedOperationException {
+        throw new UnsupportedOperationException();
     }
 }

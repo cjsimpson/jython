@@ -3,12 +3,9 @@ package org.python.modules._weakref;
 
 import org.python.core.ClassDictInit;
 import org.python.core.Py;
-import org.python.core.PyIgnoreMethodTag;
 import org.python.core.PyList;
 import org.python.core.PyObject;
 import org.python.core.PyString;
-import org.python.core.PyStringMap;
-import org.python.core.PyType;
 
 /**
  * The _weakref module.
@@ -31,7 +28,7 @@ public class WeakrefModule implements ClassDictInit {
     }
 
     public static ProxyType proxy(PyObject object)  {
-        GlobalRef gref = GlobalRef.newInstance(object);
+        ReferenceBackend gref = GlobalRef.newInstance(object);
         boolean callable = object.isCallable();
         ProxyType ret = (ProxyType)gref.find(callable ? CallableProxyType.class : ProxyType.class);
         if (ret != null) {
@@ -63,5 +60,3 @@ public class WeakrefModule implements ClassDictInit {
         return GlobalRef.getRefs(object);
     }
 }
-
-

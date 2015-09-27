@@ -120,7 +120,7 @@ public class StdoutWrapper extends OutputStream {
         if (o instanceof PyString) {
             s = ((PyString) o).getString();
         } else {
-            s = o.toString();
+            s = o.__str__().toString();
         }
         file.write(s);
         return s;
@@ -248,11 +248,11 @@ public class StdoutWrapper extends OutputStream {
     }
 
     public void print(String s) {
-        print(new PyString(s), false, false);
+        print(Py.newStringOrUnicode(s), false, false);
     }
 
     public void println(String s) {
-        print(new PyString(s), false, true);
+        print(Py.newStringOrUnicode(s), false, true);
     }
 
     public void print(PyObject o) {

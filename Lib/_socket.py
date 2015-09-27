@@ -36,7 +36,7 @@ try:
     # jarjar-ed version
     from org.python.netty.bootstrap import Bootstrap, ChannelFactory, ServerBootstrap
     from org.python.netty.buffer import PooledByteBufAllocator, Unpooled
-    from org.python.netty.channel import ChannelInboundHandlerAdapter, ChannelInitializer, ChannelOption
+    from org.python.netty.channel import ChannelException as NettyChannelException, ChannelInboundHandlerAdapter, ChannelInitializer, ChannelOption
     from org.python.netty.channel.nio import NioEventLoopGroup
     from org.python.netty.channel.socket import DatagramPacket
     from org.python.netty.channel.socket.nio import NioDatagramChannel, NioSocketChannel, NioServerSocketChannel
@@ -44,13 +44,14 @@ except ImportError:
     # dev version from extlibs
     from io.netty.bootstrap import Bootstrap, ChannelFactory, ServerBootstrap
     from io.netty.buffer import PooledByteBufAllocator, Unpooled
-    from io.netty.channel import ChannelInboundHandlerAdapter, ChannelInitializer, ChannelOption
+    from io.netty.channel import ChannelException as NettyChannelException, ChannelInboundHandlerAdapter, ChannelInitializer, ChannelOption
     from io.netty.channel.nio import NioEventLoopGroup
     from io.netty.channel.socket import DatagramPacket
     from io.netty.channel.socket.nio import NioDatagramChannel, NioSocketChannel, NioServerSocketChannel
 
 
 log = logging.getLogger("_socket")
+log.setLevel(level=logging.WARNING)
 
 
 def _debug():
@@ -324,6 +325,8 @@ _exception_map = {
 
 
 def _map_exception(java_exception):
+    if isinstance(java_exception, NettyChannelException):
+        java_exception = java_exception.cause  # unwrap
     if isinstance(java_exception, SSLException) or isinstance(java_exception, CertificateException):
         cause = java_exception.cause
         if cause:
@@ -699,11 +702,11 @@ def _socktuple(addr):
 
 class _realsocket(object):
 
-    def __init__(self, family=None, type=None, proto=None):
+    def __init__(self, family=None, type=None, proto=0):
         # FIXME verify args are correct
         self.family = family
         self.type = type
-        if proto is None:
+        if not proto:
             if type == SOCK_STREAM:
                 proto = IPPROTO_TCP
             elif type == SOCK_DGRAM:
@@ -899,15 +902,18 @@ class _realsocket(object):
 
     # SERVER METHODS
     # Calling listen means this is a server socket
-
+    @raises_java_exception
     def listen(self, backlog):
         self.socket_type = SERVER_SOCKET
         self.child_queue = ArrayBlockingQueue(backlog)
         self.accepted_children = 1  # include the parent as well to simplify close logic
 
         b = ServerBootstrap()
-        self.parent_group = NioEventLoopGroup(_NUM_THREADS, DaemonThreadFactory("Jython-Netty-Parent-%s"))
-        self.child_group = NioEventLoopGroup(_NUM_THREADS, DaemonThreadFactory("Jython-Netty-Child-%s"))
+        try:
+            self.parent_group = NioEventLoopGroup(_NUM_THREADS, DaemonThreadFactory("Jython-Netty-Parent-%s"))
+            self.child_group = NioEventLoopGroup(_NUM_THREADS, DaemonThreadFactory("Jython-Netty-Child-%s"))
+        except IllegalStateException:
+            raise error(errno.EMFILE, "Cannot allocate thread pool for server socket")
         b.group(self.parent_group, self.child_group)
         b.channel(NioServerSocketChannel)
         b.option(ChannelOption.SO_BACKLOG, backlog)
@@ -1190,6 +1196,7 @@ class _realsocket(object):
     def fileno(self):
         return self
 
+    @raises_java_exception
     def setsockopt(self, level, optname, value):
         try:
             option, cast = _socket_options[self.proto][(level, optname)]
@@ -1202,6 +1209,7 @@ class _realsocket(object):
         if self.channel:
             _set_option(self.channel.config().setOption, option, cast_value)
 
+    @raises_java_exception
     def getsockopt(self, level, optname, buflen=None):
         # Pseudo options for interrogating the status of this socket
         if level == SOL_SOCKET:
@@ -1301,8 +1309,7 @@ class _socketobject(object):
 
     __doc__ = _realsocket.__doc__
 
-
-    def __init__(self, family=AF_INET, type=SOCK_STREAM, proto=0, _sock=None):
+    def __init__(self, family=AF_INET, type=SOCK_STREAM, proto=None, _sock=None):
         if _sock is None:
             _sock = _realsocket(family, type, proto)
         self._sock = _sock
@@ -1444,10 +1451,6 @@ class ChildSocket(_realsocket):
 
 
 # EXPORTED constructors
-
-def socket(family=None, type=None, proto=None):
-    return _socketobject(family, type, proto)
-
 
 def select(rlist, wlist, xlist, timeout=None):
     for lst in (rlist, wlist, xlist):

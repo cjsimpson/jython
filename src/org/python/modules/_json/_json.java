@@ -11,6 +11,7 @@ import org.python.core.PyString;
 import org.python.core.PyTuple;
 import org.python.core.PyUnicode;
 import org.python.core.codecs;
+import org.python.core.Untraversable;
 import org.python.expose.ExposedGet;
 
 import java.util.Iterator;
@@ -24,6 +25,7 @@ import java.util.Iterator;
 public class _json implements ClassDictInit {
 
     public static final PyString __doc__ = new PyString("Port of _json C module.");
+    public static final PyObject module = Py.newString("_json");
 
     public static void classDictInit(PyObject dict) {
         dict.__setitem__("__name__", new PyString("_json"));
@@ -77,15 +79,15 @@ public class _json implements ClassDictInit {
         }
     }
 
+    @Untraversable
     static class ScanstringFunction extends PyBuiltinFunctionNarrow {
         ScanstringFunction() {
             super("scanstring", 2, 4, "scanstring");
         }
 
         @Override
-        @ExposedGet(name = "__module__")
         public PyObject getModule() {
-            return new PyString("_json");
+            return module;
         }
 
 
@@ -305,15 +307,15 @@ public class _json implements ClassDictInit {
         return new PyTuple(Py.EmptyUnicode.join(chunks), Py.newInteger(end));
     }
 
+    @Untraversable
     static class EncodeBasestringAsciiFunction extends PyBuiltinFunctionNarrow {
         EncodeBasestringAsciiFunction() {
             super("encode_basestring_ascii", 1, 1, "encode_basestring_ascii");
         }
 
         @Override
-        @ExposedGet(name = "__module__")
         public PyObject getModule() {
-            return new PyString("_json");
+            return module;
         }
 
         @Override
